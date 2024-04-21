@@ -1,4 +1,4 @@
-module us.figge.clif
+module github.com/jfigge/clif
 
 go 1.21
 
