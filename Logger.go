@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"sync"
 
-	"us.figge.clif/constants/color"
-	"us.figge.clif/constants/screen"
+	"github.com/jfigge/clif/constants/color"
+	"github.com/jfigge/clif/constants/screen"
 )
 
 type Logger struct {
