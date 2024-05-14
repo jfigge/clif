@@ -6,17 +6,20 @@ package clif
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/fsnotify/fsnotify"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -25,6 +28,7 @@ var (
 	configurationTypePtr = reflect.TypeOf(&Configuration{})
 )
 
+type processFunc func(value reflect.Value, field reflect.StructField, level int, key string) error
 type ConfigurationOption func(c *Configuration) error
 type ConfigurationNotifyFunc func(setting string, value interface{})
 type configurationData struct {
@@ -44,8 +48,8 @@ type configurationMetadata struct {
 type Configuration struct {
 	*configurationData
 	Metadata *configurationMetadata
-	Logger   LoggerConfiguration  `json:"logger" yaml:"logger"`
-	Console  ConsoleConfiguration `json:"console" yaml:"console"`
+	Logger   *LoggerConfiguration  `json:"logger" yaml:"logger"`
+	Console  *ConsoleConfiguration `json:"console" yaml:"console"`
 }
 
 // ****** Construction ********************************************************
@@ -63,48 +67,59 @@ func InitConfig(ctx context.Context, configuration interface{}, options ...Confi
 		if field.CanConvert(configurationTypePtr) {
 			ft := reflect.TypeOf(configuration).Elem().Field(i)
 			if ft.Anonymous {
-				return &InvalidInitConfigError{Code: errAnonymousCoreConfig}
+				return &InvalidInitConfigError{Code: ErrAnonymousCoreConfig}
 			}
 			if c == nil {
 				c = &Configuration{}
 				if !ft.IsExported() {
-					field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+					return &InvalidInitConfigError{Code: ErrNonExportedCoreConfig}
+					// field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 				}
 				field.Set(reflect.ValueOf(c))
 			}
 			if err := c.setMetadataDefaults(); err != nil {
 				return err
 			}
-			if err := c.loadConfiguration(ctx, options...); err != nil {
+			if err := c.newConfiguration(ctx, options...); err != nil {
 				return err
+			}
+			if c.Metadata.load {
+				var cfg interface{}
+				cfg, err := c.unmarshalConfigFile(ctx, configuration)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("%v\n", cfg)
 			}
 			found = true
 			break
+
 		} else if field.CanConvert(configurationType) {
 			return &InvalidInitConfigError{Type: configurationType}
 		}
 	}
 
 	if !found {
-		return &InvalidInitConfigError{Code: errMissingCoreConfig}
+		return &InvalidInitConfigError{Code: ErrMissingCoreConfig}
 	}
 
 	if c.Metadata.load {
-		if err := walkStructure(configuration, loadEnvironmentVariables, 0, "", ""); err != nil {
+		if err := walkStructure(configuration, 0, "", processDefault, processEnvVar); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func walkStructure(s interface{}, providerFunc interface{}, level int, indent string, key string) error {
+func walkStructure(s interface{}, level int, key string, fs ...processFunc) error {
 	rv := reflect.ValueOf(s)
 	rt := reflect.TypeOf(s)
 	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 		rt = rt.Elem()
 	}
-	for i := 0; i < rv.NumField(); i++ {
+	var err error
+	for i := 0; err == nil && i < rv.NumField(); i++ {
 		fv := rv.Field(i)
 		ft := rt.Field(i)
 		if fv.CanConvert(configurationTypePtr) && !ft.IsExported() {
@@ -116,7 +131,7 @@ func walkStructure(s interface{}, providerFunc interface{}, level int, indent st
 		case reflect.Struct:
 			fvp := reflect.New(fv.Type())
 			fvp.Elem().Set(fv)
-			walkStructure(fvp.Interface(), providerFunc, level+1, indent+"   ", key+".")
+			err = walkStructure(fvp.Interface(), level+1, key+".", fs...)
 			fv.Set(fvp.Elem())
 		case reflect.Pointer:
 			if fv.CanSet() {
@@ -124,81 +139,25 @@ func walkStructure(s interface{}, providerFunc interface{}, level int, indent st
 					newInstance := reflect.New(ft.Type.Elem())
 					fv.Set(newInstance)
 				}
-				walkStructure(fv.Interface(), providerFunc, level+1, indent+"   ", key+".")
-			} else {
-				fmt.Printf("???\n")
+				err = walkStructure(fv.Interface(), level+1, key+".", fs...)
 			}
 		default:
-			setFieldValue(fv, ft, providerFunc, level, indent, key)
-		}
-	}
-	return nil
-}
-
-func setFieldValue(fv reflect.Value, ft reflect.StructField, providerFunc interface{}, level int, indent string, key string) {
-
-}
-
-func walkStructurX(s interface{}, providerFunc interface{}, level int, indent string, key string) error {
-	rv := reflect.ValueOf(s)
-	rt := reflect.TypeOf(s)
-	fmt.Printf("%s%s %s\n", indent, rt.Name(), rv.Kind().String())
-	if rv.Kind() == reflect.Pointer {
-		rv = rv.Elem()
-		rt = rt.Elem()
-	}
-	for i := 0; i < rv.NumField(); i++ {
-		fv := rv.Field(i)
-		ft := rt.Field(i)
-		fmt.Printf("%s - Field: ", indent)
-		if ft.IsExported() {
-			fmt.Printf("+")
-		} else if fv.CanConvert(configurationTypePtr) {
-			fmt.Printf("+")
-			fv = reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem()
-		} else {
-			fmt.Printf("%s - Skipping\n", ft.Name)
-			continue
-		}
-		if fv.CanSet() {
-			fmt.Printf("!")
-		}
-		fmt.Printf("%s %s", ft.Name, fv.String())
-		switch fv.Kind() {
-		case reflect.Struct:
-			fvp := reflect.New(fv.Type())
-			fvp.Elem().Set(fv)
-			walkStructure(fvp.Interface(), providerFunc, level+1, indent+"   ", key+".")
-			fv.Set(fvp.Elem())
-		case reflect.Pointer:
-			if fv.CanSet() {
-				if fv.IsNil() {
-					newInstance := reflect.New(ft.Type.Elem())
-					fv.Set(newInstance)
+			for _, f := range fs {
+				err = f(fv, ft, level, key)
+				if err != nil {
+					break
 				}
-				walkStructure(fv.Interface(), providerFunc, level+1, indent+"   ", key+".")
-			} else {
-				fmt.Printf("???\n")
 			}
-		case reflect.String:
-			fv.Set(reflect.ValueOf(fmt.Sprintf("%d.%d", level, i)))
-		default:
-			fmt.Printf("%v\n", fv.Interface())
 		}
 	}
+	return err
+}
+
+func processDefault(fv reflect.Value, ft reflect.StructField, level int, key string) error {
 	return nil
 }
 
-func loadEnvironmentVariables(configuration interface{}) error {
-	//	rv := reflect.ValueOf(configuration)
-	//	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-	//		return &InvalidInitConfigError{Type: reflect.TypeOf(configuration)}
-	//	}
-	//
-	//	var c *Configuration
-	//	var found bool
-	//	for i := 0; i < rv.Elem().NumField(); i++ {
-	//		field := rv.Elem().Field(i)
+func processEnvVar(fv reflect.Value, ft reflect.StructField, level int, key string) error {
 	return nil
 }
 
@@ -219,7 +178,7 @@ func (c *Configuration) setMetadataDefaults() error {
 	return nil
 }
 
-func (c *Configuration) loadConfiguration(ctx context.Context, options ...ConfigurationOption) error {
+func (c *Configuration) newConfiguration(ctx context.Context, options ...ConfigurationOption) error {
 	if c.configurationData == nil {
 		c.configurationData = &configurationData{
 			notifyFuncs: make(map[string][]ConfigurationNotifyFunc),
@@ -231,8 +190,6 @@ func (c *Configuration) loadConfiguration(ctx context.Context, options ...Config
 			return err
 		}
 	}
-
-	//TODO: c.loadStructure(c)
 
 	if c.Metadata.watch {
 		var err error
@@ -284,6 +241,13 @@ func (c *Configuration) checkForEnvChange() {
 		}
 	}
 }
+func (c *Configuration) configType() string {
+	index := strings.LastIndex(c.Metadata.configFile, ".")
+	if index == -1 {
+		return ""
+	}
+	return strings.ToLower(c.Metadata.configFile[index+1:])
+}
 
 // ****** Metadata functions **************************************************
 
@@ -300,7 +264,68 @@ func (m *configurationMetadata) ConfigFile() string {
 	return m.configFile
 }
 
-// ****** Configuration functions *********************************************
+// ****** Configuration unmarshal functions ***********************************
+
+func (c *Configuration) unmarshalConfigFile(ctx context.Context, config interface{}) (interface{}, error) {
+	if c.Metadata.configFile != "" {
+		bs, err := os.ReadFile(c.Metadata.configFile)
+		if err != nil {
+			return nil, &InvalidInitConfigError{Code: ErrFileReadCoreConfig, err: err}
+		}
+		switch c.configType() {
+		case "json":
+			err = json.Unmarshal(bs, config)
+		case "yaml", "yml":
+			err = yaml.Unmarshal(bs, config)
+		}
+		if err != nil {
+			return nil, &InvalidInitConfigError{Code: ErrUnmarshalCoreConfig, err: err}
+		}
+	}
+	return config, nil
+}
+func (c *Configuration) UnmarshalJSON(bs []byte) error {
+	data := map[string]interface{}{}
+	err := json.Unmarshal(bs, &data)
+	if err != nil {
+		return err
+	}
+	return c.unmarshalLoad(data)
+}
+func (c *Configuration) UnmarshalYAML(value *yaml.Node) error {
+	data := map[string]interface{}{}
+	err := value.Decode(&data)
+	if err != nil {
+		return err
+	}
+	return c.unmarshalLoad(data)
+}
+func (c *Configuration) unmarshalLoad(values map[string]interface{}) error {
+	var err error
+	for key, value := range values {
+		switch key {
+		case "logger":
+			if m, ok := value.(map[string]interface{}); ok {
+				c.Logger, err = newLoggerConfiguration(m)
+			} else {
+				return InvalidInitConfigError{
+					Code: ErrUnmarshalLoggerData,
+					err:  fmt.Errorf("%s != %s", key, "map[string]interface{}"),
+				}
+			}
+		case "console":
+			if m, ok := value.(map[string]interface{}); ok {
+				c.Console, err = newConsoleConfiguration(m)
+			} else {
+				return InvalidInitConfigError{
+					Code: ErrUnmarshalLoggerData,
+					err:  fmt.Errorf("%s != %s", key, "map[string]interface{}"),
+				}
+			}
+		}
+	}
+	return err
+}
 
 // AddNotifyOnChange add a monitor to the named setting and triggers the notifyFunc when the value changes
 func (c *configurationData) AddNotifyOnChange(setting string, notifyFunc ConfigurationNotifyFunc) {
@@ -340,7 +365,7 @@ func ConfigurationOptionConfigFile(configFile string) ConfigurationOption {
 		return nil
 	}
 }
-func configurationOptionSkipLoad() ConfigurationOption {
+func configurationOptionNoLoad() ConfigurationOption {
 	return func(c *Configuration) error {
 		c.Metadata.load = false
 		return nil
@@ -356,22 +381,32 @@ func configurationOptionNoWatch() ConfigurationOption {
 // ***** Error ****************************************************************
 
 const (
-	errMissingCoreConfig   = "CC01"
-	errAnonymousCoreConfig = "CC02"
+	ErrMissingCoreConfig     = "CC01"
+	ErrAnonymousCoreConfig   = "CC02"
+	ErrUnmarshalCoreConfig   = "CC03"
+	ErrUnmarshalLoggerData   = "CC03LC01"
+	ErrUnmarshalConsoleData  = "CC03CC01"
+	ErrFileReadCoreConfig    = "CC04"
+	ErrNonExportedCoreConfig = "CC05"
 )
 
 type InvalidInitConfigError struct {
 	Code string
+	err  error
 	Type reflect.Type
 }
 
-func (e *InvalidInitConfigError) Error() string {
+func (e InvalidInitConfigError) Error() string {
 	switch e.Code {
-	case errMissingCoreConfig:
+	case ErrMissingCoreConfig:
 		return "configuration error - InitConfig(core configuration not present)"
-	case errAnonymousCoreConfig:
+	case ErrAnonymousCoreConfig:
 		return "configuration error - InitConfig(core configuration is anonymous)"
-
+	case ErrNonExportedCoreConfig:
+		return "configuration error - InitConfig(core configuration is unexported)"
+	case ErrUnmarshalCoreConfig, ErrUnmarshalLoggerData, ErrUnmarshalConsoleData,
+		ErrFileReadCoreConfig:
+		return fmt.Sprintf("configuration error - %v", e.err)
 	default:
 		if e.Type == nil {
 			return "configuration error - InitConfig(nil)"

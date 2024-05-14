@@ -15,6 +15,7 @@ import (
 	"github.com/jfigge/clif/constants/cursor"
 	"github.com/jfigge/clif/constants/screen"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -26,6 +27,7 @@ var (
 	ErrConsoleNoTerminal       = fmt.Errorf("console error - no terminal available")
 	ErrConsoleInvalidRawMode   = fmt.Errorf("console error - unable to enter raw mode")
 	ErrConsoleSizeUnavailable  = fmt.Errorf("console error - unable to obtain dimensions")
+	ErrConsoleUnmarshalType    = fmt.Errorf("console error - invalid type")
 	ErrConsoleSizeNonCompliant = fmt.Errorf("console warn - requested size not met")
 )
 
@@ -34,8 +36,8 @@ type ConsoleResizeFunc func(width, height int)
 type ConsoleStopFunc func()
 type ConsoleWaitGroup func(wg *sync.WaitGroup)
 type consoleConfigurationData struct {
-	width  int `json:"width" yaml:"width" cmd:"--console-width"`
-	height int `json:"height" yaml:"height" cmd:"--console-height"`
+	width  int `cmd:"--console-width"`
+	height int `cmd:"--console-height"`
 }
 type ConsoleConfiguration struct {
 	*consoleConfigurationData
@@ -197,6 +199,43 @@ func (c *Console) PrintAtf(x int, y int, format string, args ...interface{}) {
 }
 
 // ****** Configuration *******************************************************
+
+func newConsoleConfiguration(values map[string]interface{}) (*ConsoleConfiguration, error) {
+	c := &ConsoleConfiguration{consoleConfigurationData: &consoleConfigurationData{}}
+	for key, value := range values {
+		switch key {
+		case "width":
+			if width, err := toInt(key, value); err != nil {
+				return nil, fmt.Errorf("%w: %s", ErrConsoleUnmarshalType, err)
+			} else {
+				c.width = width
+			}
+		case "height":
+			if height, err := toInt(key, value); err != nil {
+				return nil, fmt.Errorf("%w: %s", ErrConsoleUnmarshalType, err)
+			} else {
+				c.height = height
+			}
+		}
+	}
+	return c, nil
+}
+
+func (c *ConsoleConfiguration) UnmarshalYAML(value *yaml.Node) error {
+	for _, v := range value.Content {
+		switch v.Value {
+		case "width":
+			if err := v.Decode(&c.width); err != nil {
+				return err
+			}
+		case "height":
+			if err := v.Decode(&c.height); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 func (c *ConsoleConfiguration) Width() int {
 	return c.width

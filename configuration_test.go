@@ -6,7 +6,6 @@ package clif
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,13 +29,13 @@ type configCPtr struct {
 }
 
 type configD struct {
-	core Configuration
+	Core Configuration
 	name string
 }
 
 type configDPtr struct {
 	name string
-	core *Configuration
+	Core *Configuration
 }
 
 type configEPtr struct {
@@ -86,9 +85,9 @@ func Test_InitConfig(t *testing.T) {
 					t.Fatal("invalid test")
 				} else {
 					assert.NotNil(t, c)
-					assert.NotNil(t, c.core)
-					assert.NotNil(t, c.core.Metadata)
-					assert.NotNil(t, c.core.Metadata.configFile)
+					assert.NotNil(t, c.Core)
+					assert.NotNil(t, c.Core.Metadata)
+					assert.NotNil(t, c.Core.Metadata.configFile)
 				}
 			},
 		},
@@ -112,7 +111,7 @@ func Test_InitConfig(t *testing.T) {
 			ctx := context.Background()
 			err := InitConfig(
 				ctx, test.config,
-				configurationOptionSkipLoad(),
+				configurationOptionNoLoad(),
 				configurationOptionNoWatch())
 			if test.errStr != "" {
 				if err != nil {
@@ -137,46 +136,69 @@ type WalkerC struct {
 
 type WalkerB struct {
 	internal   string
-	External   string
-	WalkerC    WalkerC
-	WalkerCPtr *WalkerC
+	External   string   `yaml:"external" json:"external"`
+	WalkerC    WalkerC  `yaml:"walkerC" json:"walkerC"`
+	WalkerCPtr *WalkerC `yaml:"walkerCPtr" json:"walkerCPtr"`
 }
 
 type WalkerA struct {
 	internal   string
-	External   string
-	Mappy      map[string]interface{}
-	Things     []string
-	Object     interface{}
+	External   string                 `yaml:"external" json:"external"`
+	Mappy      map[string]interface{} `yaml:"mappy" json:"mappy"`
+	Things     []string               `yaml:"things" json:"things"`
+	Object     interface{}            `yaml:"object" json:"object"`
 	handler    func() error
-	Number     int
-	Boolean    bool
-	WalkerB    WalkerB
-	WalkerBPtr *WalkerB
-	core       *Configuration
+	Number     int            `yaml:"number" json:"number"`
+	Boolean    bool           `yaml:"boolean" json:"boolean"`
+	WalkerB    WalkerB        `yaml:"walkerB" json:"walkerB"`
+	WalkerBPtr *WalkerB       `yaml:"walkerBPtr" json:"walkerBPtr"`
+	Core       *Configuration `yaml:"core" json:"core"`
 }
 
 func Test_Walker(t *testing.T) {
 	ctx := context.Background()
 	tests := map[string]struct {
-		config interface{}
+		config   interface{}
+		filename string
 	}{
-		"success": {&WalkerA{WalkerBPtr: &WalkerB{}}},
+		"yaml": {
+			config:   &WalkerA{WalkerBPtr: &WalkerB{}},
+			filename: "testdata/config.yaml",
+		},
+		//"json": {
+		//	config:   &WalkerA{WalkerBPtr: &WalkerB{}},
+		//	filename: "testdata/config.json",
+		//},
 	}
 	for name, test := range tests {
 		t.Run(name, func(tt *testing.T) {
 			err := InitConfig(
 				ctx, test.config,
 				configurationOptionNoWatch(),
+				ConfigurationOptionConfigFile(test.filename),
 			)
-			fmt.Printf("Error: %v\n", err)
+			actual, ok := test.config.(*WalkerA)
+			if !ok {
+				t.Fatal("unable to convert config type")
+			} else if err != nil {
+				t.Fatalf("%v", err)
+			}
+			assert.Equal(tt, "walkerA.external", actual.External)
+			assert.Equal(tt, map[string]interface{}{"int": 1, "bool": true, "string": "string"}, actual.Mappy)
+			assert.Equal(tt, []string{"one", "two", "three"}, actual.Things)
+			assert.Equal(tt, "blah", actual.Object)
+			assert.Equal(tt, -1, actual.Number)
+			assert.Equal(tt, true, actual.Boolean)
+			assert.Equal(tt, "walkerB.external", actual.WalkerB.External)
+			assert.Equal(tt, "walkerBC.external", actual.WalkerB.WalkerC.External)
+			assert.Equal(tt, "walkerBCPtr.external", actual.WalkerB.WalkerCPtr.External)
+			assert.Equal(tt, "walkerBPtr.external", actual.WalkerBPtr.External)
+			assert.Equal(tt, "walkerBPtrC.external", actual.WalkerBPtr.WalkerC.External)
+			assert.Equal(tt, "walkerBPtrCPtr.external", actual.WalkerBPtr.WalkerCPtr.External)
+			assert.Equal(tt, "debug", actual.Core.Logger.level)
+			assert.Equal(tt, true, actual.Core.Logger.colorized)
+			assert.Equal(tt, 50, actual.Core.Console.width)
+			assert.Equal(tt, 10, actual.Core.Console.height)
 		})
 	}
-}
-
-func f(w *WalkerA) {
-	w.WalkerB.WalkerC.External = "2.1"
-	w.WalkerB.WalkerCPtr = &WalkerC{External: "2."}
-	w.WalkerBPtr.WalkerC.External = "2.1"
-	w.WalkerBPtr.WalkerCPtr = &WalkerC{External: "2."}
 }

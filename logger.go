@@ -12,14 +12,18 @@ import (
 	"github.com/jfigge/clif/constants/screen"
 )
 
+var (
+	ErrLoggerUnmarshalType = fmt.Errorf("logger error - invalid type")
+)
+
 type Logger struct {
 	history *History
 	sync    sync.Mutex
 	debug   bool
 }
 type loggerConfigurationData struct {
-	level     int  `json:"level" yaml:"level" env:"${APPNAME}_LOGGER_LEVEL" file:"logger_level" cmd:"--logger-level" monitored:""`
-	colorized bool `json:"colorized" yaml:"colorized" env:"${APPNAME}_LOGGER_COLORIZED" file:"logger_colorized" cmd:"--logger-colorized"`
+	level     string `env:"${APPNAME}_LOGGER_LEVEL" file:"logger_level" cmd:"--logger-level" monitored:""`
+	colorized bool   `env:"${APPNAME}_LOGGER_COLORIZED" file:"logger_colorized" cmd:"--logger-colorized"`
 }
 type LoggerConfiguration struct {
 	*loggerConfigurationData
@@ -78,10 +82,30 @@ func (l *Logger) Error(text string) {
 
 // ****** Configuration *******************************************************
 
-func (c *LoggerConfiguration) Level() int {
+func newLoggerConfiguration(values map[string]interface{}) (*LoggerConfiguration, error) {
+	c := &LoggerConfiguration{loggerConfigurationData: &loggerConfigurationData{}}
+	for key, value := range values {
+		switch key {
+		case "level":
+			if level, err := toString(key, value); err != nil {
+				return nil, fmt.Errorf("%w: %s", ErrLoggerUnmarshalType, err)
+			} else {
+				c.level = level
+			}
+		case "colorized":
+			if colorized, err := toBool(key, value); err != nil {
+				return nil, fmt.Errorf("%w: %s", ErrLoggerUnmarshalType, err)
+			} else {
+				c.colorized = colorized
+			}
+		}
+	}
+	return c, nil
+}
+func (c *LoggerConfiguration) Level() string {
 	return c.level
 }
-func (c *LoggerConfiguration) SetLevel(level int) {
+func (c *LoggerConfiguration) SetLevel(level string) {
 	c.level = level
 }
 func (c *LoggerConfiguration) Colorized() bool {

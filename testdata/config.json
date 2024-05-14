@@ -1,0 +1,44 @@
+{
+  "external": "walkerA.external",
+  "mappy": {
+    "int": 1,
+    "bool": true,
+    "string": "string"
+  },
+  "things": [
+    "one",
+    "two",
+    "three"
+  ],
+  "object": "blah",
+  "number": -1,
+  "boolean": true,
+  "walkerB": {
+    "external": "walkerB.external",
+    "walkerC": {
+      "external": "walkerBC.external"
+    },
+    "walkerCPtr": {
+      "external": "walkerBCPtr.external"
+    }
+  },
+  "walkerBPtr": {
+    "external": "walkerBPtr.external",
+    "walkerC": {
+      "external": "walkerBPtrC.external"
+    },
+    "walkerCPtr": {
+      "external": "walkerBPtrCPtr.external"
+    }
+  },
+  "core": {
+    "logger": {
+      "level": "debug",
+      "colorized": true
+    },
+    "console": {
+      "width": 50,
+      "height": 10
+    }
+  }
+}
